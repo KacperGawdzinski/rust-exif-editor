@@ -1,0 +1,1 @@
+sudo apt install libgexiv2-dev oraz install gtk
