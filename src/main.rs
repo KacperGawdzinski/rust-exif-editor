@@ -3,9 +3,9 @@ use gtk::{
     glib, Application, ApplicationWindow, Box, Button, Entry, FileChooserDialog, Orientation,
     Picture, ResponseType,
 };
-
-use little_exif::exif_tag::ExifTag;
-use little_exif::metadata::Metadata;
+use exif::{Field, In, Tag, Value};
+use exif::experimental::Writer;
+use rexiv2::Metadata;
 
 const APP_ID: &str = "org.gtk_rs.Exif_Rust";
 
@@ -70,6 +70,21 @@ fn build_ui(app: &Application) {
                                 //         f.display_value().with_unit(&exif)
                                 //     );
                                 // }
+                                 
+                                // let image_desc = Field {
+                                //     tag: Tag::SceneType,
+                                //     ifd_num: In::PRIMARY,
+                                //     value: Value::Ascii(vec![b"RATATATA".to_vec()]),
+                                // };
+                                // let mut writer = Writer::new();
+                                // let mut buf = std::io::Cursor::new(Vec::new());
+                                // writer.push_field(&image_desc);
+                                // writer.write(&mut buf, false);
+
+                                let mut metadata = Metadata::new_from_path(path_str).unwrap();
+                                println!("{}", metadata.get_exif_tags().unwrap()[0]);
+                                metadata.set_tag_string("Exif.Image.Artist", "John Doe").unwrap();
+                                metadata.save_to_file(path_str).unwrap();
                             }
                         }
                     }
