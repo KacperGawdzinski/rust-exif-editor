@@ -6,9 +6,9 @@ use gtk::{
 use rexiv2::Metadata;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::{fs, string};
 
 const APP_ID: &str = "org.gtk_rs.Exif_Rust";
 
@@ -39,7 +39,7 @@ fn build_ui(app: &Application) {
 
     file_button.connect_clicked({
         let picture = picture.clone();
-        let path_str = path_str.clone();
+        let path_str: Arc<Mutex<String>> = path_str.clone();
         let image_paths = image_paths.clone();
         let current_index = current_index.clone();
         let list_box = list_box.clone();
@@ -48,7 +48,7 @@ fn build_ui(app: &Application) {
             let file_dialog = FileChooserDialog::new(
                 Some("Select an Image"),
                 None::<&ApplicationWindow>,
-                gtk::FileChooserAction::Open,
+                gtk::FileChooserAction::SelectFolder,
                 &[("Close", gtk::ResponseType::Close)],
             );
 
@@ -60,47 +60,79 @@ fn build_ui(app: &Application) {
             file_dialog.connect_response({
                 let picture = picture.clone();
                 let path_str = path_str.clone();
+                let image_paths = image_paths.clone();
+                let current_index = current_index.clone();
                 let list_box = list_box.clone();
 
                 move |dialog, response| {
                     if response == ResponseType::Accept {
-                        if let Some(file_path) = dialog.file().and_then(|f| f.path()) {
-                            let path_str_curr = file_path.to_str().unwrap();
-                            let mut path_str = path_str.lock().unwrap();
-                            path_str.replace_range(.., path_str_curr);
+                        if let Some(folder_path) = dialog.file().and_then(|f| f.path()) {
+                            let mut paths = Vec::new();
 
-                            let pic = gio::File::for_path(&*path_str);
-                            picture.set_file(Some(&pic));
-
-                            let file = std::fs::File::open(&*path_str).unwrap();
-                            let mut bufreader = std::io::BufReader::new(&file);
-                            let exifreader = exif::Reader::new();
-                            let exif = exifreader.read_from_container(&mut bufreader).expect("xd");
-                            for f in exif.fields() {
-                                println!(
-                                    "{} {} {}",
-                                    f.tag,
-                                    f.ifd_num,
-                                    f.display_value().with_unit(&exif)
-                                );
+                            for entry in fs::read_dir(folder_path).unwrap() {
+                                let entry = entry.unwrap();
+                                let path = entry.path();
+                                if path.is_file()
+                                    && path.extension().map_or(false, |ext| {
+                                        matches!(
+                                            ext.to_str().unwrap_or(""),
+                                            "jpg" | "jpeg" | "png" | "bmp"
+                                        )
+                                    })
+                                {
+                                    paths.push(path);
+                                }
                             }
-                            for f in exif.fields() {
-                                let row = ListBoxRow::new();
-                                let row_box = Box::new(Orientation::Horizontal, 6);
 
-                                let key_label = Label::new(Some(&f.tag.to_string()));
-                                key_label.set_halign(Align::Start);
+                            *image_paths.lock().unwrap() = paths
+                                .iter()
+                                .map(|p| p.to_str().unwrap().to_string())
+                                .collect();
+                            *current_index.lock().unwrap() = 0;
 
-                                let value_label = Label::new(Some(
-                                    &f.display_value().with_unit(&exif).to_string(),
-                                ));
-                                value_label.set_halign(Align::End);
+                            if let Some(first_image) = image_paths.lock().unwrap().first() {
+                                let pic = gio::File::for_path(first_image);
+                                picture.set_file(Some(&pic));
 
-                                row_box.append(&key_label);
-                                row_box.append(&value_label);
-                                row.set_child(Some(&row_box));
+                                let mut child = list_box.first_child();
+                                while let Some(widget) = child {
+                                    child = widget.next_sibling();
+                                    list_box.remove(&widget);
+                                }
 
-                                list_box.append(&row);
+                                if let Ok(file) = std::fs::File::open(first_image) {
+                                    let mut path_str = path_str.lock().unwrap();
+                                    path_str.replace_range(.., first_image);
+
+                                    let mut bufreader = std::io::BufReader::new(&file);
+                                    let exifreader = exif::Reader::new();
+                                    if let Ok(exif) = exifreader.read_from_container(&mut bufreader)
+                                    {
+                                        for f in exif.fields() {
+                                            let row = ListBoxRow::new();
+                                            let row_box = Box::new(Orientation::Horizontal, 6);
+
+                                            let key_label = Label::new(Some(&f.tag.to_string()));
+                                            key_label.set_halign(Align::Start);
+
+                                            let value_label = Label::new(Some(
+                                                &f.display_value()
+                                                    .with_unit(&exif)
+                                                    .to_string()
+                                                    .chars()
+                                                    .take(50)
+                                                    .collect::<String>(),
+                                            ));
+                                            value_label.set_halign(Align::End);
+
+                                            row_box.append(&key_label);
+                                            row_box.append(&value_label);
+                                            row.set_child(Some(&row_box));
+
+                                            list_box.append(&row);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -187,6 +219,135 @@ fn build_ui(app: &Application) {
         }
     });
 
+    left_button.connect_clicked({
+        let picture = picture.clone();
+        let image_paths = image_paths.clone();
+        let current_index = current_index.clone();
+        let path_str: Arc<Mutex<String>> = path_str.clone();
+        let list_box = list_box.clone();
+
+        move |_| {
+            let mut index = current_index.lock().unwrap();
+            let images = image_paths.lock().unwrap();
+            if !images.is_empty() {
+                *index = if *index == 0 {
+                    images.len() - 1
+                } else {
+                    *index - 1
+                };
+
+                if let Some(image) = images.get(*index) {
+                    let pic = gio::File::for_path(image);
+                    picture.set_file(Some(&pic));
+
+                    let pic = gio::File::for_path(image);
+                    picture.set_file(Some(&pic));
+
+                    let mut child = list_box.first_child();
+                    while let Some(widget) = child {
+                        child = widget.next_sibling();
+                        list_box.remove(&widget);
+                    }
+
+                    if let Ok(file) = std::fs::File::open(image) {
+                        let mut path_str = path_str.lock().unwrap();
+                        path_str.replace_range(.., image);
+
+                        let mut bufreader = std::io::BufReader::new(&file);
+                        let exifreader = exif::Reader::new();
+                        if let Ok(exif) = exifreader.read_from_container(&mut bufreader) {
+                            for f in exif.fields() {
+                                let row = ListBoxRow::new();
+                                let row_box = Box::new(Orientation::Horizontal, 6);
+
+                                let key_label = Label::new(Some(&f.tag.to_string()));
+                                key_label.set_halign(Align::Start);
+
+                                let value_label = Label::new(Some(
+                                    &f.display_value()
+                                        .with_unit(&exif)
+                                        .to_string()
+                                        .chars()
+                                        .take(50)
+                                        .collect::<String>(),
+                                ));
+                                value_label.set_halign(Align::End);
+
+                                row_box.append(&key_label);
+                                row_box.append(&value_label);
+                                row.set_child(Some(&row_box));
+
+                                list_box.append(&row);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    right_button.connect_clicked({
+        let picture = picture.clone();
+        let image_paths = image_paths.clone();
+        let current_index = current_index.clone();
+        let list_box = list_box.clone();
+
+        move |_| {
+            let mut index = current_index.lock().unwrap();
+            let images = image_paths.lock().unwrap();
+            if !images.is_empty() {
+                *index = (*index + 1) % images.len();
+
+                if let Some(image) = images.get(*index) {
+                    let pic = gio::File::for_path(image);
+                    picture.set_file(Some(&pic));
+
+                    let pic = gio::File::for_path(image);
+                    picture.set_file(Some(&pic));
+
+                    let mut child = list_box.first_child();
+                    while let Some(widget) = child {
+                        child = widget.next_sibling();
+                        list_box.remove(&widget);
+                    }
+
+                    if let Ok(file) = std::fs::File::open(image) {
+                        let mut path_str = path_str.lock().unwrap();
+                        path_str.replace_range(.., image);
+
+                        let mut bufreader = std::io::BufReader::new(&file);
+                        let exifreader = exif::Reader::new();
+                        if let Ok(exif) = exifreader.read_from_container(&mut bufreader) {
+                            for f in exif.fields() {
+                                let row = ListBoxRow::new();
+                                let row_box = Box::new(Orientation::Horizontal, 6);
+
+                                let key_label = Label::new(Some(&f.tag.to_string()));
+                                key_label.set_halign(Align::Start);
+
+                                let value_label = Label::new(Some(
+                                    &f.display_value()
+                                        .with_unit(&exif)
+                                        .to_string()
+                                        .chars()
+                                        .take(50)
+                                        .collect::<String>(),
+                                ));
+                                value_label.set_halign(Align::End);
+
+                                row_box.append(&key_label);
+                                row_box.append(&value_label);
+                                row.set_child(Some(&row_box));
+
+                                list_box.append(&row);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     let input_box = Box::new(Orientation::Vertical, 6);
     input_box.append(&search_entry);
     input_box.append(&value_entry);
@@ -195,13 +356,20 @@ fn build_ui(app: &Application) {
     input_box.append(&list_box);
 
     input_box.set_width_request(400);
+    input_box.set_hexpand(false);
+
+    let navigation_box = Box::new(Orientation::Horizontal, 12);
+    navigation_box.append(&left_button);
+    navigation_box.append(&right_button);
 
     let main_box = Box::new(Orientation::Horizontal, 12);
     main_box.set_margin_top(12);
     main_box.set_margin_bottom(12);
     main_box.set_margin_start(12);
     main_box.set_margin_end(12);
+
     main_box.append(&picture);
+    main_box.append(&navigation_box);
     main_box.append(&input_box);
 
     let settings = gtk::Settings::default().unwrap();
